@@ -147,7 +147,6 @@ function StateRedistribution(rd::RefElemData{2, Quad}, md::MeshData{2, <:CutCell
     (; physical_frame_elements) = md.mesh_type
 
     neighbor_list = compute_neighbor_list(md, default_score=default_score)    
-    @show neighbor_list
 
     # indexing by elements is a little tricky. for consistency, we store overlap counts
     # separately for cut and cartesian cells. 
