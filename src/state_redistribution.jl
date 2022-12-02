@@ -21,7 +21,18 @@ get_face_nodes(x::ComponentArray, i::CellIndex{Cartesian}, args...) = view(x.car
 get_face_nodes(x::ComponentArray, i::CellIndex{Cut}, md::MeshData) = view(x.cut, md.mesh_type.cut_face_nodes[i.index])
 
 # ================== neighborhood computation code ================
-struct VolumeScore end
+const DEFAULT_VOL_RATIO = 0.5
+struct VolumeScore
+    threshold
+end
+
+function VolumeScore(vol_ratio, md::MeshData)
+    vx, vy = md.mesh_type.cut_cell_data.vxyz
+    cartesian_cell_volume = maximum(diff(vx)) * maximum(diff(vy))
+
+    default_volume = vol_ratio * cartesian_cell_volume
+    return VolumeScore(default_volume)
+end
 
 # Note: Scores should be constructed such that a larger score is considered a better match
 function compute_nbhd_score(::VolumeScore, neighbor_list, md)
@@ -31,14 +42,6 @@ function compute_nbhd_score(::VolumeScore, neighbor_list, md)
     end
 
     return total_volume
-end
-
-# merge until a cell is some ratio of the volume of a uniform Cartesian cell.
-# the default ratio is 1/2. 
-function default_threshold_score(::VolumeScore, mesh_data; volume_ratio = 0.5)
-    vx, vy = mesh_data.mesh_type.cut_cell_data.vxyz
-    cartesian_cell_volume = maximum(diff(vx)) * maximum(diff(vy))
-    return volume_ratio * cartesian_cell_volume
 end
 
 # Helper functions for constructing merge neighborhoods ---------------------------------
@@ -84,27 +87,23 @@ function get_cartesian_nbhrs(e::CellIndex{T}, md) where T
 end
 
 
-function compute_neighbor_list(md; threshold_score=-Inf, score_type=VolumeScore(), score_params=md)
-
-    if threshold_score == -Inf
-        threshold_score = default_threshold_score(score_type, score_params)
-    end
+function compute_neighbor_list(md::MeshData; default_score=VolumeScore(DEFAULT_VOL_RATIO, md))
 
     merge_nbhds = Vector{CellIndex}[[CellIndex{Cut}(e)] for e in 1:num_cut_elements(md)]
     for e in 1:num_cut_elements(md)
         # Initialize the merge nbhd with the its featured cut cell
-        merged_score = compute_nbhd_score(score_type, merge_nbhds[e], score_params)
+        merged_score = compute_nbhd_score(default_score, merge_nbhds[e], md)
 
         # Find the neighbors of the initial cut cell
         neighbors = get_cartesian_nbhrs(CellIndex{Cut}(e), md)
         
-        while length(neighbors) > 0 && merged_score < threshold_score
+        while length(neighbors) > 0 && merged_score < default_score.threshold
             best_nbhr = neighbors[1]
-            best_score = compute_nbhd_score(score_type, vcat(merge_nbhds[e], neighbors[1]), score_params)
+            best_score = compute_nbhd_score(default_score, vcat(merge_nbhds[e], neighbors[1]), md)
             
             for e_nbhr in neighbors[2:end]
-                new_score = compute_nbhd_score(score_type, vcat(merge_nbhds[e], e_nbhr), score_params)
-                if new_score >= best_score
+                new_score = compute_nbhd_score(default_score, vcat(merge_nbhds[e], e_nbhr), md)
+                if new_score > best_score
                     best_score = new_score
                     best_nbhr = e_nbhr
                 end
@@ -115,12 +114,13 @@ function compute_neighbor_list(md; threshold_score=-Inf, score_type=VolumeScore(
             merged_score = best_score
 
             # Remove the just-merged element from the list of neighbors
-            filter!((e)-> e == best_nbhr, neighbors)
+            # TODO: filter removed elements of the same type
+            filter!((e)-> e.index == best_nbhr, neighbors)
 
             # Add the just-merged cell's neighbors to the list of neighbors
             new_neighbors = get_cartesian_nbhrs(best_nbhr, md)
             for nbhr in new_neighbors
-                if nbhr in merge_nbhds[e]
+                if !(nbhr in merge_nbhds[e])
                     push!(neighbors, nbhr)
                 end
             end
@@ -142,10 +142,12 @@ struct StateRedistribution{TP, TN, TE, TO, TU}
     u_tmp::TU # temporary storage for operations
 end
 
-function StateRedistribution(rd::RefElemData{2, Quad}, md::MeshData{2, <:CutCellMesh})
+function StateRedistribution(rd::RefElemData{2, Quad}, md::MeshData{2, <:CutCellMesh}; 
+                             default_score=VolumeScore(DEFAULT_VOL_RATIO, md) )
     (; physical_frame_elements) = md.mesh_type
 
-    neighbor_list = compute_neighbor_list(md)    
+    neighbor_list = compute_neighbor_list(md, default_score=default_score)    
+    @show neighbor_list
 
     # indexing by elements is a little tricky. for consistency, we store overlap counts
     # separately for cut and cartesian cells. 
