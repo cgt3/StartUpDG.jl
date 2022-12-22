@@ -43,6 +43,9 @@ Base.@kwdef struct MeshData{Dim, MeshType, VolumeType, FaceType, VolumeQType,
     rstxyzJ::VolumeGeofacsType
     J::VolumeJType
 
+    # normalized surface geofacs
+    nxyz::NTuple{Dim, FaceType}
+
     # surface geofacs
     nxyzJ::NTuple{Dim, FaceType}
     Jf::FaceType
@@ -50,8 +53,16 @@ Base.@kwdef struct MeshData{Dim, MeshType, VolumeType, FaceType, VolumeQType,
     is_periodic::NTuple{Dim, Bool}
 end
 
-# enable use of @set and setproperties(...) for MeshData
-ConstructionBase.constructorof(::Type{MeshData{T1, T2, T3, T4, T5, T6, T7, T8, T9}}) where {T1, T2, T3, T4, T5, T6, T7, T8, T9} = MeshData{T1, T2, T3, T4, T5, T6, T7, T8, T9}
+# MeshData constructor where we do not specify `nxyz`
+function MeshData(mesh_type, VXYZ, EToV, FToF, xyz, xyzf, xyzq, wJq, 
+                  mapM, mapP, mapB, rstxyzJ, J, nxyzJ, Jf, is_periodic) 
+
+    nxyz = map(nJ -> nJ ./ Jf, nxyzJ)        
+                         
+    return MeshData(mesh_type, VXYZ, EToV, FToF, 
+                    xyz, xyzf, xyzq, wJq, mapM, mapP, mapB,
+                    rstxyzJ, J, nxyz, nxyzJ, Jf, is_periodic)
+end
 
 function ConstructionBase.setproperties(md::MeshData, patch::NamedTuple)
     fields = (haskey(patch, symbol) ? getproperty(patch, symbol) : getproperty(md, symbol) for symbol in fieldnames(typeof(md)))
@@ -60,7 +71,7 @@ end
 
 ConstructionBase.getproperties(md::MeshData) = 
     (; mesh_type=md.mesh_type, VXYZ=md.VXYZ, EToV=md.EToV, FToF=md.FToF, xyz=md.xyz, xyzf=md.xyzf, xyzq=md.xyzq, wJq=md.wJq,
-       mapM=md.mapM, mapP=md.mapP, mapB=md.mapB, rstxyzJ=md.rstxyzJ, J=md.J, nxyzJ=md.nxyzJ, Jf=md.Jf,
+       mapM=md.mapM, mapP=md.mapP, mapB=md.mapB, rstxyzJ=md.rstxyzJ, J=md.J, nxyz = md.nxyz, nxyzJ=md.nxyzJ, Jf=md.Jf,
        is_periodic=md.is_periodic)
 
 function Base.show(io::IO, md::MeshData{DIM}) where {DIM}
@@ -75,17 +86,17 @@ end
 
 function Base.propertynames(x::MeshData{1}, private::Bool = false)
     return (fieldnames(MeshData)...,
-            :num_elements, :VX, :x, :xq, :xf, :nxJ, :rxJ)
+            :num_elements, :VX, :x, :xq, :xf, :nx, :rxJ)
 end
 function Base.propertynames(x::MeshData{2}, private::Bool = false) 
     return (fieldnames(MeshData)...,
             :num_elements, :VX, :VY, :x, :y, :xq, :yq, :xf, :yf, 
-            :nxJ, :nyJ, :rxJ, :sxJ, :ryJ, :syJ)
+            :nx, :ny, :rxJ, :sxJ, :ryJ, :syJ)
 end
 function Base.propertynames(x::MeshData{3}, private::Bool = false) 
     return (fieldnames(MeshData)...,
             :num_elements, :VX, :VY, :VZ, :x, :y, :z, :xq, :yq, :zq, :xf, :yf, :zf, 
-            :nxJ, :nyJ, :nzJ, :rxJ, :sxJ, :txJ, :ryJ, :syJ, :tyJ, :rzJ, :szJ, :tzJ)
+            :nx, :ny, :nz, :rxJ, :sxJ, :txJ, :ryJ, :syJ, :tyJ, :rzJ, :szJ, :tzJ)
 end
 
 # convenience routines for unpacking individual tuple entries
@@ -126,6 +137,13 @@ function Base.getproperty(x::MeshData, s::Symbol)
     elseif s==:nzJ
         return getfield(x, :nxyzJ)[3]
 
+    elseif s==:nx
+        return getfield(x, :nxyz)[1]
+    elseif s==:ny
+        return getfield(x, :nxyz)[2]
+    elseif s==:nz
+        return getfield(x, :nxyz)[3]        
+
     elseif s==:rxJ
         return getfield(x, :rstxyzJ)[1,1]
     elseif s==:sxJ
@@ -154,7 +172,6 @@ function Base.getproperty(x::MeshData, s::Symbol)
     elseif s==:sJ 
         return getfield(x, :Jf)
 
-    # return getfield(x,:num_elements) # num rows in EToV = num elements
     else
         return getfield(x, s)
     end
@@ -172,7 +189,7 @@ mesh information (VXYZ..., EToV).
 
 Given new nodal positions `xyz...` (e.g., from mesh curving), recomputes geometric terms
 and outputs a new MeshData struct. Only fields modified are the coordinate-dependent terms
-    `xyz`, `xyzf`, `xyzq`, `rstxyzJ`, `J`, `nxyzJ`, `sJ`.
+    `xyz`, `xyzf`, `xyzq`, `rstxyzJ`, `J`, `nxyzJ`, `Jf`.
 """
 
 # splats VXYZ 
@@ -238,7 +255,7 @@ function MeshData(VX, VY, EToV, rd::RefElemData{2})
     x = V1 * VX[transpose(EToV)]
     y = V1 * VY[transpose(EToV)]
 
-    #Compute connectivity maps: uP = exterior value used in DG numerical fluxes
+    # Compute connectivity maps: uP = exterior value used in DG numerical fluxes
     @unpack Vf = rd
     xf = Vf * x
     yf = Vf * y
@@ -256,14 +273,14 @@ function MeshData(VX, VY, EToV, rd::RefElemData{2})
     xq, yq = (x -> Vq * x).((x, y))
     wJq = diagm(wq) * (Vq * J)
 
-    nxJ, nyJ, sJ = compute_normals(rstxyzJ, rd.Vf, rd.nrstJ...)
+    nxJ, nyJ, Jf = compute_normals(rstxyzJ, rd.Vf, rd.nrstJ...)
 
     is_periodic = (false, false)
     return MeshData(rd.element_type, tuple(VX, VY), EToV, FToF,
                     tuple(x, y), tuple(xf, yf), tuple(xq, yq), wJq,
                     mapM, mapP, mapB,
                     SMatrix{2, 2}(tuple(rxJ, ryJ, sxJ, syJ)), J,
-                    tuple(nxJ, nyJ), sJ,
+                    tuple(nxJ, nyJ), Jf,
                     is_periodic)
 
 end
@@ -336,8 +353,10 @@ function MeshData(rd::RefElemData, md::MeshData{Dim}, xyz...) where {Dim}
 
     xyzf, xyzq, rstxyzJ, J, wJq, nxyzJ, Jf = recompute_geometry(rd, xyz)
 
+    nxyz = map(n -> n ./ Jf, nxyzJ)
+
     # TODO: should we warp VXYZ as well? Or just set it to nothing since it no longer determines geometric terms?
-    return setproperties(md, (; xyz, xyzq, xyzf, rstxyzJ, J, wJq, nxyzJ, Jf))
+    return setproperties(md, (; xyz, xyzq, xyzf, rstxyzJ, J, wJq, nxyz, nxyzJ, Jf))
 end
 
 
