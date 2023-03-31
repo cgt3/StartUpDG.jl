@@ -25,7 +25,7 @@ UnPack = "3a884ed6-31ef-47d7-9d2a-63182c4928ed"
 
 [compat]
 ConstructionBase = "1"
-FillArrays = "0.13"
+FillArrays = "0.13, 1"
 HDF5 = "0.16"
 Kronecker = "0.5"
 NodesAndModes = "0.9"
